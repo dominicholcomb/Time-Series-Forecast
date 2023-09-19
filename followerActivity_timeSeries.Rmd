@@ -1,0 +1,148 @@
+---
+title: "Follower Activity: Time Series"
+output:
+  word_document: default
+  word: default
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+*In this document, I build a time series model to predict future follower activity on TikTok. The data was exported from my personal TikTok as a csv and can provide insight about optimal post-time and long-term follower activity behavior.*
+
+*The data shows follower activity at each hour, over the course of a week. I decided to build with a SARIMA model because of its ability to handle complex seasonal patterns (in this case, a season being 24 hours).*
+
+
+## Import Relevant Libraries
+
+```{r setup,warning=FALSE,message=FALSE}
+library(tidyverse)
+library(babynames)
+library(astsa)
+library(forecast)
+```
+
+
+
+## Read the data in
+*Printing data to ensure data is read in correctly, chopped to 5 rows for the purpose of this markdown.*
+
+```{r}
+fActivity <- read.csv("Follower activity.csv")
+head(fActivity,5)
+```
+
+## Create a 1d vector with just follower activity
+*The time series function being used expects 1d inputs.*
+
+```{r}
+jFollowers<- fActivity %>% 
+  select(Active.followers)
+
+head(jFollowers,5)
+```
+
+## Convert to Time Series
+
+```{r}
+tsFollowers<-ts(jFollowers)
+```
+
+
+## Evaluate ACF and PACF
+*Visually evaluating where threshold cutoffs for lag exist in ACF and PACF plots can indicate whether an auto regressive (AR), or a moving average (MA) model is a better fit. Since the PACF cuts off more significantly, this indicates that I should expect a more AR based model to be more applicable here.*
+```{r}
+acf2(tsFollowers)
+```
+
+## See what model is suggested using an autofit function
+*While this will likely not be my final model, it can serve as a good starting point for the model build.*
+
+```{r}
+auto.arima(tsFollowers,trace=T)
+```
+
+## Find Optimal Model by Comparing Residuals and Term Significance
+*This model was selected by starting with the autofit suggestion and introducing a 24 hour seasonality term. From there I added terms, seeing the effect on the residual plots and whether each term was statistically significant. While it was impossible to find a model that reduced the p-values for the Ljung-Box statistic to under 0.05 by introducing only statistically significant terms. The following model produced expected ACF of residual plots and normal Q-Q plots to suggest that this would still be an effective model. Note the MA1 term that was introduced does fall a bit above a 0.05 threshold for significance, it is still a low p-value and seemed to visually improve the residuals to such an extent that I decided it was a valuable term to keep in the final model.*
+
+```{r}
+sarima(tsFollowers,2,0,1,3,1,0,24)
+```
+
+
+## Plotting results from the model build
+
+```{r}
+tsFollowers
+forecasts<- sarima.for(tsFollowers,48,2,0,1,3,1,0,24, xlab = "Hours from Midnight 11/18/2022")
+```
+
+## Extracting the Data from the Forecast Function
+*Extracting the forecast and the standard errors to create a confidence interval in a new plot.*
+```{r}
+# Extract forecasted values and standard errors
+forecasted_values <- forecasts$pred
+standard_errors <- forecasts$se
+
+# Set the confidence level
+confidence_level <- 0.95
+
+# Calculate the Z-score for the desired confidence level
+z_score <- qnorm((1 + confidence_level) / 2)
+
+# Calculate the margin of error
+margin_of_error <- z_score * standard_errors
+
+# Calculate the lower and upper confidence intervals
+lower_ci <- forecasted_values - margin_of_error
+upper_ci <- forecasted_values + margin_of_error
+
+```
+
+
+*Formatting the data more nicely so that it's easier to work with and introducing a date axis for the data.*
+```{r}
+# Create a data frame for plotting
+forecast_data <- data.frame(
+  Time = time(forecasted_values),
+  Forecast = forecasted_values,
+  Lower_CI = lower_ci,
+  Upper_CI = upper_ci
+)
+
+#set how many data points before prediction shows up on plot
+preShow=72
+
+#set x-axis dates
+xDates<-seq(as.POSIXct("2022-11-18 23:00:00"), as.POSIXct("2022-12-31 08:32:00"), by="hour")
+
+#select the dates for the data to be displayed
+dataDates<-xDates[seq(1:preShow)+length(tsFollowers)-preShow+1]
+
+#select the dates for the forecast
+forecastDates<-xDates[forecast_data$Time]+1440
+
+```
+
+## Replotting
+*For most purposes, the plot above should be sufficient. I decided to extract the data and replot in a prettier way to demonstrate data visualization skill.*
+
+```{r}
+# Create a plot with forecasts and confidence intervals
+ggplot() +
+  #forecast
+  geom_line(aes(x= c(tail(dataDates,1),forecastDates), y = c(tail(tsFollowers,1),forecast_data$Forecast), color = "blue"), size = 0.5, linetype='dashed') +
+  geom_point(aes(x= forecastDates, y = forecast_data$Forecast, color = "blue"), size = 1) +
+  geom_ribbon(aes(x = forecastDates, ymin = forecast_data$Lower_CI, ymax = forecast_data$Upper_CI, fill = "blue"), alpha = 0.2) +
+  #data
+  geom_line(aes(x=dataDates,y=tail(tsFollowers,preShow),color="black")) +
+  geom_point(aes(x=dataDates,y=tail(tsFollowers,preShow))) +
+  #legends, axes, theme, etc.
+  labs(x = "Date & Time", y = "Number of Active Followers", title= "Active Followers by Time") +
+  scale_x_datetime(labels = scales::date_format("%m-%d %H:%M%p"), breaks = "1 day") +
+  scale_color_manual(name = "Color", values = c("black","blue"), labels = c("Measured data","Forecast")) +
+  scale_fill_manual(name = "Fill", values = c("blue"), labels = c("95% Confidence")) +
+  theme_bw()
+```
+
+*This plot can be referenced and recreated over different dates to help me determine optimal post time. I learned, for example, to expect most follower activity to occur in the afternoon.*
